@@ -61,6 +61,10 @@ install:
   default-job-hours: 4
   default-start-hour: 9
 
+# F11 假期日历测试
+holiday:
+  max-scan-days: 60
+
 logging:
   level:
     com.evops: WARN

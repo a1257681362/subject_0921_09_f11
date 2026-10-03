@@ -6,6 +6,7 @@ import com.evops.common.Viewer;
 import com.evops.compliance.service.CategoryListService;
 import com.evops.credit.entity.CreditOccupation;
 import com.evops.credit.entity.Customer;
+import com.evops.credit.mapper.CreditOccupationMapper;
 import com.evops.credit.service.CreditService;
 import com.evops.credit.service.CustomerService;
 import com.evops.ledger.entity.PostingOrder;
@@ -32,6 +33,7 @@ public class CreditPostingGateway implements PostingCreditGateway {
     private final QuoteMapper quoteMapper;
     private final QuoteLineMapper quoteLineMapper;
     private final PostingOrderMapper orderMapper;
+    private final CreditOccupationMapper occupationMapper;
     private final CustomerService customerService;
     private final CreditService creditService;
     /** 受限行业名单域：授信上刊提交口校验客户行业类目 */
@@ -40,12 +42,14 @@ public class CreditPostingGateway implements PostingCreditGateway {
     public CreditPostingGateway(QuoteMapper quoteMapper,
                                 QuoteLineMapper quoteLineMapper,
                                 PostingOrderMapper orderMapper,
+                                CreditOccupationMapper occupationMapper,
                                 CustomerService customerService,
                                 CreditService creditService,
                                 CategoryListService categoryListService) {
         this.quoteMapper = quoteMapper;
         this.quoteLineMapper = quoteLineMapper;
         this.orderMapper = orderMapper;
+        this.occupationMapper = occupationMapper;
         this.customerService = customerService;
         this.creditService = creditService;
         this.categoryListService = categoryListService;
@@ -111,5 +115,18 @@ public class CreditPostingGateway implements PostingCreditGateway {
     @Transactional(rollbackFor = Exception.class)
     public void releaseFor(PostingOrder order, boolean reversed, String operatorName) {
         creditService.release(order, reversed, operatorName);
+    }
+
+    /**
+     * F11 假期顺延：挂起授信单的占用行仍 ACTIVE，归属期间随新档期迁移到新期间；
+     * 金额/客户/单据快照不变，且不碰已释放/对冲的历史归属。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void onSlotShifted(PostingOrder order, String oldPeriod, String newPeriod) {
+        occupationMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CreditOccupation>()
+                .eq(CreditOccupation::getOrderId, order.getId())
+                .eq(CreditOccupation::getStatus, com.evops.credit.CreditEnums.OCC_ACTIVE)
+                .set(CreditOccupation::getBizPeriod, newPeriod));
     }
 }

@@ -37,6 +37,8 @@ public final class LedgerEnums {
     /** F10：合规冻结 / 解除冻结 */
     public static final String EVENT_COMPLIANCE_FREEZE = "COMPLIANCE_FREEZE";
     public static final String EVENT_COMPLIANCE_UNFREEZE = "COMPLIANCE_UNFREEZE";
+    /** F11：假期日历档期顺延（原档期/新档期/批次/日历版本随事件留底） */
+    public static final String EVENT_HOLIDAY_SHIFT = "HOLIDAY_SHIFT";
 
     /** 经纬度建档状态：未建档 / 已建档 */
     public static final String GEO_UNFILED = "UNFILED";

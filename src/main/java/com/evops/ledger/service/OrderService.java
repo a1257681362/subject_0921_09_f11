@@ -420,6 +420,103 @@ public class OrderService {
                 "合规强制落架" + (reason != null && !reason.trim().isEmpty() ? "：" + reason.trim() : ""));
     }
 
+    // ---- F11 假期日历档期顺延（由假期顺延批次服务编排调用） ----
+
+    /**
+     * 假期顺延一张挂起中上刊单：发生日 expectedOldOccurDate（CAS 校验，防跨批次重复挪）→ newOccurDate，
+     * ISO 周档期与归属期间按新发生日重算；先判目标周档期（仍被别的 ACTIVE 单占用返回 false 跳过，不拖垮整批），
+     * CAS 挪单后占新周、释放旧周；版本 +1 写 HOLIDAY_SHIFT 事件；最早原档期只固化一次。
+     *
+     * @return true 已顺延；false 当前态不可挪（单据已不挂起/合规冻结/发生日已不是预览值/目标周被占），由批次记 SKIPPED
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean applyHolidayShift(PostingOrder order, LocalDate expectedOldOccurDate,
+                                     LocalDate newOccurDate, String batchNo,
+                                     Integer calendarVersionNo, String restName, String operator) {
+        if (order == null || expectedOldOccurDate == null || newOccurDate == null
+                || !newOccurDate.isAfter(expectedOldOccurDate)) {
+            return false;
+        }
+        LocalDate oldWeekStart = order.getWeekStart();
+        LocalDate oldWeekEnd = order.getWeekEnd();
+        LocalDate newWeekStart = WeekRanges.mondayOf(newOccurDate);
+        LocalDate newWeekEnd = WeekRanges.sundayOf(newOccurDate);
+        String oldPeriod = order.getBizPeriod();
+        String newPeriod = WeekRanges.periodOf(newOccurDate);
+        boolean firstShift = order.getOriginOccurDate() == null;
+        // 新发生日仍在同一 ISO 周（如周六顺延到周日调休上班、周一顺延到同周周三）：档期占用本就是本单，不迁 slot
+        boolean sameWeek = oldWeekStart.equals(newWeekStart);
+
+        // 目标周仍被别的挂起单占着 → 跳过（预览已标 conflict；确认时占位释放后再来即可成功）
+        if (!sameWeek) {
+            SlotBooking target = slotMapper.selectOne(new LambdaQueryWrapper<SlotBooking>()
+                    .eq(SlotBooking::getSiteId, order.getSiteId())
+                    .eq(SlotBooking::getWeekStart, newWeekStart));
+            if (target != null && LedgerEnums.SLOT_ACTIVE.equals(target.getStatus())
+                    && !target.getOrderId().equals(order.getId())) {
+                return false;
+            }
+        }
+
+        // CAS：仍挂起、合规正常、发生日仍是预览当时值（中途被人动过/别的批次已挪则跳过）
+        LambdaUpdateWrapper<PostingOrder> uw = new LambdaUpdateWrapper<PostingOrder>()
+                .eq(PostingOrder::getId, order.getId())
+                .eq(PostingOrder::getStatus, LedgerEnums.ORDER_HUNG)
+                .eq(PostingOrder::getComplianceStatus, LedgerEnums.COMPLIANCE_NORMAL)
+                .eq(PostingOrder::getOccurDate, expectedOldOccurDate)
+                .set(PostingOrder::getOccurDate, newOccurDate)
+                .set(PostingOrder::getWeekStart, newWeekStart)
+                .set(PostingOrder::getWeekEnd, newWeekEnd)
+                .set(PostingOrder::getBizPeriod, newPeriod)
+                .setSql("version_no = version_no + 1")
+                .setSql("holiday_shift_count = holiday_shift_count + 1")
+                .set(PostingOrder::getLastShiftBatchNo, batchNo)
+                .set(PostingOrder::getOperatorName, operator);
+        if (firstShift) {
+            uw.set(PostingOrder::getOriginOccurDate, expectedOldOccurDate)
+                    .set(PostingOrder::getOriginWeekStart, oldWeekStart)
+                    .set(PostingOrder::getOriginWeekEnd, oldWeekEnd);
+        }
+        int updated = orderMapper.update(null, uw);
+        if (updated == 0) {
+            return false;
+        }
+
+        // 跨周才迁档期；同周（顺延到本周末调休上班日）slot 本就属本单，不动
+        if (!sameWeek) {
+            occupySlot(order.getSiteId(), newWeekStart, newWeekEnd, order);
+            releaseSlotAt(order.getSiteId(), oldWeekStart, order.getId());
+        }
+
+        order.setOccurDate(newOccurDate);
+        order.setWeekStart(newWeekStart);
+        order.setWeekEnd(newWeekEnd);
+        order.setBizPeriod(newPeriod);
+        order.setVersionNo(order.getVersionNo() == null ? 1 : order.getVersionNo() + 1);
+        order.setHolidayShiftCount(order.getHolidayShiftCount() == null ? 1 : order.getHolidayShiftCount() + 1);
+        order.setLastShiftBatchNo(batchNo);
+        order.setOperatorName(operator);
+        if (firstShift) {
+            order.setOriginOccurDate(expectedOldOccurDate);
+            order.setOriginWeekStart(oldWeekStart);
+            order.setOriginWeekEnd(oldWeekEnd);
+        }
+
+        recordEvent(order, LedgerEnums.EVENT_HOLIDAY_SHIFT, newOccurDate, operator, null,
+                "假期顺延（批次 " + batchNo + "，日历 v" + calendarVersionNo
+                        + (restName != null && !restName.isEmpty() ? "，依据：" + restName + " " + expectedOldOccurDate + " 休息" : "")
+                        + "）：发生日 " + expectedOldOccurDate + " → " + newOccurDate
+                        + "，档期 " + oldWeekStart + "~" + oldWeekEnd + " → " + newWeekStart + "~" + newWeekEnd
+                        + (!newPeriod.equals(oldPeriod) ? "，归属期间 " + oldPeriod + " → " + newPeriod : ""));
+
+        // 授信占用行的归属期间随新档期迁移（仍在占用中的部分；已落架释放的不动）
+        PostingCreditGateway creditGateway = creditGatewayProvider.getIfAvailable();
+        if (creditGateway != null && !newPeriod.equals(oldPeriod)) {
+            creditGateway.onSlotShifted(order, oldPeriod, newPeriod);
+        }
+        return true;
+    }
+
     private String statusText(String status) {
         if (LedgerEnums.ORDER_TAKEN_DOWN.equals(status)) {
             return "已落架";
@@ -471,10 +568,15 @@ public class OrderService {
     }
 
     private void releaseSlot(PostingOrder order) {
+        releaseSlotAt(order.getSiteId(), order.getWeekStart(), order.getId());
+    }
+
+    /** F11：释放指定点位指定周、且属于本单的 ACTIVE 档期占用（顺延时单上周档期已先改到内存对象上，按显式坐标释放）。 */
+    private void releaseSlotAt(Long siteId, LocalDate weekStart, Long orderId) {
         slotMapper.update(null, new LambdaUpdateWrapper<SlotBooking>()
-                .eq(SlotBooking::getSiteId, order.getSiteId())
-                .eq(SlotBooking::getWeekStart, order.getWeekStart())
-                .eq(SlotBooking::getOrderId, order.getId())
+                .eq(SlotBooking::getSiteId, siteId)
+                .eq(SlotBooking::getWeekStart, weekStart)
+                .eq(SlotBooking::getOrderId, orderId)
                 .eq(SlotBooking::getStatus, LedgerEnums.SLOT_ACTIVE)
                 .set(SlotBooking::getStatus, LedgerEnums.SLOT_RELEASED));
     }

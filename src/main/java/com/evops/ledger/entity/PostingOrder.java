@@ -57,6 +57,14 @@ public class PostingOrder extends BaseEntity {
     private String installStatus;
     /** 安装完工回传时刻 */
     private LocalDateTime installFinishTime;
+    /** F11 假期顺延：最早原档期（只在首次顺延时写一次，之后再顺延也不覆盖；扯皮翻原档期） */
+    private LocalDate originOccurDate;
+    private LocalDate originWeekStart;
+    private LocalDate originWeekEnd;
+    /** F11 假期顺延次数（每次确认批量顺延 +1） */
+    private Integer holidayShiftCount;
+    /** 最近一次顺延批次号 */
+    private String lastShiftBatchNo;
     private String offsetReason;
     /** 开单经手人 */
     private String operatorName;

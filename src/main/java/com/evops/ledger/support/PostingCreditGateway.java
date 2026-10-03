@@ -30,4 +30,12 @@ public interface PostingCreditGateway {
      * @param reversed true=对冲更正（释放额度但不转应收）；false=落架撤刊（未核销额转应收）
      */
     void releaseFor(PostingOrder order, boolean reversed, String operatorName);
+
+    /**
+     * F11 假期顺延：授信占用行的归属期间随新档期迁移（仅仍 ACTIVE 占用中的行；
+     * 已撤刊 RELEASED/对冲 REVERSED 的历史归属固化不动）。金额、客户、单据均不变，只换期间列。
+     * 默认空实现：授信模块缺失时底账顺延照常。
+     */
+    default void onSlotShifted(PostingOrder order, String oldPeriod, String newPeriod) {
+    }
 }

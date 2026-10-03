@@ -93,6 +93,11 @@ install:
   default-job-hours: 4
   default-start-hour: 9
 
+# F11 假期日历与档期顺延
+holiday:
+  # 顺延寻找下一工作日的最大扫描天数：超长连休/日历配错时直接报错，不静默无限后推
+  max-scan-days: 60
+
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
   type-aliases-package: com.evops

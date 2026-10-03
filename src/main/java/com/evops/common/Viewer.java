@@ -21,29 +21,38 @@ public class Viewer {
     private final boolean canApprove;
     /** 可维护受限行业类目名单与处置合规冻结（合规岗/系统） */
     private final boolean listAdmin;
+    /** 可维护假期日历并执行档期顺延批量挪单（运营/系统） */
+    private final boolean calendarAdmin;
 
-    private Viewer(String username, boolean allCustomers, boolean canApprove, boolean listAdmin) {
+    private Viewer(String username, boolean allCustomers, boolean canApprove, boolean listAdmin,
+                   boolean calendarAdmin) {
         this.username = username;
         this.allCustomers = allCustomers;
         this.canApprove = canApprove;
         this.listAdmin = listAdmin;
+        this.calendarAdmin = calendarAdmin;
     }
 
     public static Viewer sales(String username) {
-        return new Viewer(username, false, false, false);
+        return new Viewer(username, false, false, false, false);
     }
 
     public static Viewer finance(String username) {
-        return new Viewer(username, true, true, false);
+        return new Viewer(username, true, true, false, false);
     }
 
     public static Viewer system(String username) {
-        return new Viewer(username, true, true, true);
+        return new Viewer(username, true, true, true, true);
     }
 
     /** 合规岗：跨销售看全部客户（批量冻结要命中全部在途单），但不能审批额度 */
     public static Viewer compliance(String username) {
-        return new Viewer(username, true, false, true);
+        return new Viewer(username, true, false, true, false);
+    }
+
+    /** 运营：维护假期日历、跨点位批量顺延挪单（看全部），但不参与授信审批/名单维护 */
+    public static Viewer ops(String username) {
+        return new Viewer(username, true, false, false, true);
     }
 
     /** 从当前 Shiro 登录主体构造视角；未登录返回 null（调用方决定如何兜底）。 */
@@ -62,6 +71,9 @@ public class Viewer {
             }
             if (subject.hasRole("compliance")) {
                 return compliance(name);
+            }
+            if (subject.hasRole("ops")) {
+                return ops(name);
             }
             // 其余登录账号一律按销售视角（只看自己名下）
             return sales(name);
@@ -105,11 +117,20 @@ public class Viewer {
         }
     }
 
+    /** 假期日历维护与档期顺延只认运营/系统。 */
+    public void requireCalendarAdmin() {
+        if (!calendarAdmin) {
+            throw new BusinessException("只有运营/系统可以维护假期日历并执行档期顺延挪单");
+        }
+    }
+
     public String getUsername() { return username; }
     public boolean isAllCustomers() { return allCustomers; }
     public boolean isCanApprove() { return canApprove; }
     /** 是否合规岗/系统（可维护名单、处置冻结） */
     public boolean isListAdmin() { return listAdmin; }
+    /** 是否运营/系统（可维护假期日历、批量顺延挪单） */
+    public boolean isCalendarAdmin() { return calendarAdmin; }
     /** 是否销售（受限）视角 */
     public boolean isScoped() { return !allCustomers; }
 }

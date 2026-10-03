@@ -85,6 +85,7 @@
     <div class="tab" data-tab="install">⑬ 安装派单资质</div>
     <div class="tab" data-tab="agent">⑭ 代理协议结算</div>
     <div class="tab" data-tab="compliance">⑮ 受限行业名单</div>
+    <div class="tab" data-tab="holiday">⑯ 假期日历挪单</div>
   </div>
 
   <!-- 点位挂牌 -->
@@ -778,6 +779,79 @@
       </div>
     </div>
   </div>
+
+  <!-- 假期日历与档期顺延 -->
+  <div class="panel" id="panel-holiday">
+    <p class="muted">运营 ops1（或系统 demo）：休息日 REST 与调休上班日 WORK 分开维护，按年导入先比差异再确认；挂起中上刊单发生日落休息日的自动顺延到下一工作日（调休上班日不动），先预览再批量确认。未完工安装派单联动改期通知到队，队撞档转待匹配。</p>
+
+    <h3>年度假期日历（按年导入：先比差异，确认才覆盖）</h3>
+    <div class="grid">
+      <div><label>年份 *</label><input id="hdYear" type="number" placeholder="2026" value="2026"></div>
+      <div><label>导入说明</label><input id="hdSummary" placeholder="如 国务院 2026 年节假日安排"></div>
+      <div style="align-self:end;display:flex;gap:8px">
+        <button class="gray" onclick="hdLoadYear()">看当年日历</button>
+        <button class="gray" onclick="hdLoadVersions()">刷版本链</button>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="span2"><label>整年份条目（每行一条：日期|REST/WORK|名称；REST=休息日，WORK=调休上班日）</label><textarea id="hdItems" rows="6" placeholder="2026-10-01|REST|国庆节&#10;2026-10-02|REST|国庆节&#10;2026-10-10|WORK|国庆调休上班"></textarea></div>
+    </div>
+    <div class="actions">
+      <button class="gray" onclick="hdImportPreview()">导入预览（比对差异，不落库）</button>
+      <button class="danger" onclick="hdImportConfirm()">确认导入（覆盖发布新版）</button>
+    </div>
+    <div id="hdDiff"></div>
+    <div id="hdYearView"></div>
+    <table id="hdVersionTable"></table>
+
+    <h3>手工草稿（另起新版 → 配置 → 发布，与导入二选一）</h3>
+    <div class="grid">
+      <div><label>草稿版本号 *</label><input id="hdDraftVer" placeholder="v 后的数字"></div>
+      <div><label>发布说明</label><input id="hdManualSummary" placeholder="临时调休安排"></div>
+      <div style="align-self:end;display:flex;gap:8px">
+        <button onclick="hdNewDraft()">另起草稿（拷贝生效版）</button>
+        <button class="gray" onclick="hdConfigure()">保存草稿条目</button>
+        <button class="warn" onclick="hdPublish()">发布草稿</button>
+      </div>
+    </div>
+
+    <h3>工作日判定</h3>
+    <div class="grid">
+      <div><label>日期</label><input id="hdCheckDate" type="date"></div>
+      <div style="align-self:end"><button class="gray" onclick="hdInspect()">判定</button></div>
+    </div>
+    <div id="hdInspect"></div>
+
+    <h3>档期顺延（先预览，确认了再批量执行）</h3>
+    <div class="grid">
+      <div><label>发生日范围起 *</label><input id="hdShiftFrom" type="date"></div>
+      <div><label>范围止 *</label><input id="hdShiftTo" type="date"></div>
+      <div><label>只看点位编号（留空全部）</label><input id="hdShiftSite"></div>
+      <div class="span2"><label>顺延原因（批次留底）</label><input id="hdShiftReason" placeholder="2026 国庆假期安排调整"></div>
+      <div style="align-self:end"><button class="gray" onclick="hdShiftPreview()">出顺延预览</button></div>
+    </div>
+    <div id="hdShiftPreview"></div>
+    <div class="actions">
+      <button class="danger" onclick="hdShiftConfirm()">确认批量顺延（按上方预览批次执行）</button>
+    </div>
+
+    <h3>顺延批次翻查</h3>
+    <div class="grid">
+      <div><label>批次状态</label><select id="hdBatchStatus">
+        <option value="">全部</option>
+        <option value="PREVIEWED">预览待确认</option>
+        <option value="CONFIRMED">已批量执行</option>
+      </select></div>
+      <div style="align-self:end;display:flex;gap:8px">
+        <button class="gray" onclick="hdLoadBatches()">翻批次</button>
+      </div>
+      <div><label>按上刊单号查顺延痕迹</label><input id="hdTraceOrder" placeholder="PO…"></div>
+      <div style="align-self:end"><button class="gray" onclick="hdLoadTrace()">查痕迹</button></div>
+    </div>
+    <table id="hdBatchTable"></table>
+    <div id="hdBatchDetail"></div>
+    <table id="hdTraceTable"></table>
+  </div>
 </div>
 
 <script>
@@ -826,7 +900,7 @@ async function doLogin() {
 async function init() {
   // header 占位（登录后填充）
   document.body.insertAdjacentHTML('afterbegin',
-    '<header><h1>户外广告点位与上刊底账 <span class="muted" style="color:#c8d4e6">EVOPS f1·f2·f3·f4·f5·f6·f7·f8·f9·f10</span></h1><span class="who"></span></header>');
+    '<header><h1>户外广告点位与上刊底账 <span class="muted" style="color:#c8d4e6">EVOPS f1·f2·f3·f4·f5·f6·f7·f8·f9·f10·f11</span></h1><span class="who"></span></header>');
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
@@ -839,6 +913,7 @@ async function init() {
     if (t.dataset.tab === 'install') { inLoadTeams(); inLoad(); document.getElementById('inPeriod').value = new Date().toISOString().slice(0,7); }
     if (t.dataset.tab === 'agent') { agLoadAgents(); agLoadAgreements(); agLoadSettlements(); }
     if (t.dataset.tab === 'compliance') { clLoadEffective(); clLoadVersions(); clLoadBatches(); }
+    if (t.dataset.tab === 'holiday') { hdLoadYear(); hdLoadBatches(); }
   });
   document.getElementById('calPeriod').value = new Date().toISOString().slice(0, 7);
   try { const me = await call('GET', '/me'); showApp(me.username); loadSites(); loadSpecs(); clRefreshEffectiveCache(); } catch (e) { showLogin(); }
@@ -2350,6 +2425,213 @@ async function clForceTakeDown() {
   try {
     await call('POST', '/compliance/orders/' + encodeURIComponent(val('clOrderNo')) + '/force-take-down', { reason: val('clDisposeReason') });
     toast('已强制落架', true); clLoadBatches();
+  } catch (e) { toast(e.message); }
+}
+
+/* ===== F11 假期日历与档期顺延 ===== */
+let hdPendingBatchNo = null;
+
+function hdYear() { return Number(document.getElementById('hdYear').value); }
+function hdParseDays(text) {
+  return text.split('\n').map(s => s.trim()).filter(s => s).map(line => {
+    const parts = line.split('|').map(x => x.trim());
+    if (parts.length < 2 || !parts[0] || !parts[1]) throw new Error('条目格式应为「日期|REST/WORK|名称」：' + line);
+    if (parts[1] !== 'REST' && parts[1] !== 'WORK') throw new Error('日类型只能是 REST（休息日）或 WORK（调休上班日）：' + line);
+    return { date: parts[0], type: parts[1], name: parts[2] || null };
+  });
+}
+function hdDayTypeTag(t) {
+  return t === 'REST' ? '<span class="tag offset">休息日</span>'
+    : t === 'WORK' ? '<span class="tag success">调休上班</span>' : esc(t);
+}
+function hdBatchTag(s) {
+  return s === 'PREVIEWED' ? '<span class="tag pending">预览待确认</span>'
+    : s === 'CONFIRMED' ? '<span class="tag success">已批量执行</span>' : esc(s);
+}
+function hdRecTag(s) {
+  return s === 'SHIFTED' ? '<span class="tag success">已顺延</span>'
+    : s === 'SKIPPED' ? '<span class="tag failed">已跳过</span>'
+    : s === 'PLANNED' ? '<span class="tag pending">待确认</span>' : esc(s);
+}
+function hdInstallTag(s) {
+  return { NONE: '无派单', RESCHEDULED: '派单联动改期并通知到队', TO_PENDING: '队撞档转待匹配', NOT_DONE: '已到场/完工未联动' }[s] || esc(s || '');
+}
+
+async function hdLoadYear() {
+  try {
+    const d = await call('GET', '/holidays/years/' + hdYear());
+    const v = d.version;
+    document.getElementById('hdYearView').innerHTML =
+      (d.calendar
+        ? `<p>日历 <b>${esc(d.calendar.calendarName)}</b>（${esc(d.calendar.calendarNo)}）`
+          + (v ? ` 当前生效 <b>v${v.versionNo}</b>（${esc(v.operatorName)} ${esc(v.publishTime || '')}，${esc(v.changeSummary || '—')}），休息日 ${v.restCount} 天、调休上班 ${v.workCount} 天。` : ' 尚未发布生效版本。') + '</p>'
+        : '<p class="muted">该年尚未建档。</p>')
+      + (d.items && d.items.length
+        ? '<table><tr><th>日期</th><th>星期</th><th>类型</th><th>名称</th></tr>'
+          + d.items.map(i => `<tr><td>${esc(i.holiDate)}</td><td>${'周' + '日一二三四五六'[new Date(i.holiDate + 'T00:00:00').getDay()]}</td>
+            <td>${hdDayTypeTag(i.dayType)}</td><td>${esc(i.holidayName || '')}</td></tr>`).join('') + '</table>'
+        : '');
+    hdLoadVersions();
+  } catch (e) { toast(e.message); }
+}
+
+async function hdLoadVersions() {
+  try {
+    const list = await call('GET', '/holidays/years/' + hdYear() + '/versions');
+    document.getElementById('hdVersionTable').innerHTML =
+      '<tr><th>版本</th><th>状态</th><th>来源</th><th>休息/上班</th><th>说明</th><th>经手人</th><th>发布时刻</th></tr>'
+      + list.map(v => `<tr><td>v${v.versionNo}</td>
+        <td>${{ DRAFT: '<span class="tag pending">编制中</span>', EFFECTIVE: '<span class="tag success">生效中</span>', SUPERSEDED: '<span class="tag">已取代</span>' }[v.status] || esc(v.status)}</td>
+        <td>${v.source === 'IMPORT' ? '按年导入' : '手工配置'}</td><td>${v.restCount} / ${v.workCount}</td>
+        <td>${esc(v.changeSummary || '')}</td><td>${esc(v.operatorName)}</td><td>${esc(v.publishTime || '')}</td></tr>`).join('')
+      || '<tr><td class="muted">该年还没有版本</td></tr>';
+  } catch (e) { toast(e.message); }
+}
+
+let hdDiffCache = null;
+async function hdImportPreview() {
+  try {
+    const days = hdParseDays(document.getElementById('hdItems').value);
+    const d = await call('POST', '/holidays/years/' + hdYear() + '/import/preview',
+      { days, changeSummary: val('hdSummary') });
+    hdDiffCache = d;
+    const rows = (title, arr, tag) => arr.length
+      ? `<h4 style="margin:6px 0">${title}（${arr.length}）</h4><table><tr><th>日期</th><th>变化</th><th>名称</th></tr>`
+        + arr.map(x => `<tr><td>${esc(x.date)}</td><td>${tag(x)}</td><td>${esc(x.name || x.oldName || '')}</td></tr>`).join('') + '</table>'
+      : '';
+    document.getElementById('hdDiff').innerHTML =
+      `<p><b>覆盖差异比对</b>（对旧版 ${d.oldVersionNo ? 'v' + d.oldVersionNo : '（无，首次导入）'}）：`
+      + `新增 <b>${d.addedCount}</b>、删除 <b>${d.removedCount}</b>、类型变化 <b>${d.typeChangedCount}</b>、不变 ${d.unchangedCount}；导入后休息日 ${d.newRestCount} 天、调休上班 ${d.newWorkCount} 天。</p>`
+      + rows('新增', d.added, x => '<span class="tag success">新增 ' + esc(x.type) + '</span>')
+      + rows('删除', d.removed, x => '<span class="tag failed">删除（原 ' + esc(x.oldType) + '）</span>')
+      + rows('REST ⇄ WORK 类型变化', d.typeChanged, x => '<span class="tag offset">' + esc(x.oldType) + ' → ' + esc(x.type) + '</span>');
+    toast('差异已出，请核对后再「确认导入」', true);
+  } catch (e) { toast(e.message); }
+}
+async function hdImportConfirm() {
+  try {
+    const days = hdParseDays(document.getElementById('hdItems').value);
+    if (!days.length) { toast('导入条目为空，拒绝清空式覆盖'); return; }
+    const v = await call('POST', '/holidays/years/' + hdYear() + '/import/confirm',
+      { days, changeSummary: val('hdSummary') });
+    toast(hdYear() + ' 年日历 v' + v.versionNo + ' 已发布生效（旧版已取代）', true);
+    hdDiffCache = null; document.getElementById('hdDiff').innerHTML = '';
+    hdLoadYear();
+  } catch (e) { toast(e.message); }
+}
+
+async function hdNewDraft() {
+  try {
+    const v = await call('POST', '/holidays/years/' + hdYear() + '/versions');
+    document.getElementById('hdDraftVer').value = v.versionNo;
+    const d = await call('GET', '/holidays/versions/' + v.id);
+    document.getElementById('hdItems').value = (d.items || []).map(i => i.holiDate + '|' + i.dayType + (i.holidayName ? '|' + i.holidayName : '')).join('\n');
+    toast('草稿 v' + v.versionNo + ' 已就绪', true); hdLoadVersions();
+  } catch (e) { toast(e.message); }
+}
+async function hdConfigure() {
+  const verNo = val('hdDraftVer'); if (!verNo) { toast('先填草稿版本号'); return; }
+  try {
+    const list = await call('GET', '/holidays/years/' + hdYear() + '/versions');
+    const draft = list.find(v => v.versionNo === Number(verNo) && v.status === 'DRAFT');
+    if (!draft) { toast('v' + verNo + ' 不是编制中草稿'); return; }
+    await call('PUT', '/holidays/versions/' + draft.id + '/days', { days: hdParseDays(document.getElementById('hdItems').value) });
+    toast('草稿 v' + verNo + ' 条目已保存', true); hdLoadVersions();
+  } catch (e) { toast(e.message); }
+}
+async function hdPublish() {
+  const verNo = val('hdDraftVer'); if (!verNo) { toast('先填草稿版本号'); return; }
+  try {
+    const list = await call('GET', '/holidays/years/' + hdYear() + '/versions');
+    const draft = list.find(v => v.versionNo === Number(verNo) && v.status === 'DRAFT');
+    if (!draft) { toast('v' + verNo + ' 不是编制中草稿'); return; }
+    const v = await call('POST', '/holidays/versions/' + draft.id + '/publish', { changeSummary: val('hdManualSummary') });
+    toast('v' + v.versionNo + ' 已发布生效', true); hdLoadYear();
+  } catch (e) { toast(e.message); }
+}
+
+async function hdInspect() {
+  try {
+    const d = await call('GET', '/holidays/working-day?date=' + encodeURIComponent(val('hdCheckDate')));
+    document.getElementById('hdInspect').innerHTML =
+      `<p>${esc(d.date)} 是 <b>${d.working ? '工作日' : '休息日'}</b>（${esc(d.basisLabel)}${d.holidayName ? '：' + esc(d.holidayName) : ''}）`
+      + `，依据日历 ${d.calendarVersionNo ? 'v' + d.calendarVersionNo : '（该年无生效版，按自然周）'}。</p>`;
+  } catch (e) { toast(e.message); }
+}
+
+async function hdShiftPreview() {
+  try {
+    const d = await call('POST', '/holidays/shifts/preview', {
+      from: val('hdShiftFrom'), to: val('hdShiftTo'),
+      siteNo: val('hdShiftSite'), reason: val('hdShiftReason')
+    });
+    hdPendingBatchNo = d.batchNo;
+    const row = r => `<tr><td>${esc(r.orderNo)}</td><td>${esc(r.siteNo)}</td><td>${esc(r.creativeName)}</td>
+      <td>${esc(r.oldOccurDate)} <span class="muted">(${esc(r.hitRestName)})</span></td>
+      <td><b>${esc(r.newOccurDate)}</b></td>
+      <td>${esc(r.oldWeekStart)} ~ ${esc(r.oldWeekEnd)}</td>
+      <td>${esc(r.newWeekStart)} ~ ${esc(r.newWeekEnd)}</td>
+      <td>${r.conflictOrderNo ? '<span class="tag failed">被 ' + esc(r.conflictOrderNo) + ' 占</span>' : '空'}</td>
+      <td>${hdInstallTag(r.installAction)}</td></tr>`;
+    document.getElementById('hdShiftPreview').innerHTML =
+      `<p>预览批次 <b>${esc(d.batchNo)}</b>（日历 ${d.calendarVersionNo ? 'v' + d.calendarVersionNo : '自然周'}，范围 ${esc(d.scopeFrom)} ~ ${esc(d.scopeTo)}${d.siteNo ? '，点位 ' + esc(d.siteNo) : ''}）：`
+      + `命中待顺延 <b>${d.hitCount}</b> 张；安装已到场/完工拦截 <b>${d.blockedCount}</b> 张（不挪）。核对后点下方确认。</p>`
+      + (d.shifts.length ? '<table><tr><th>单号</th><th>点位</th><th>画面</th><th>原发生日（休息日）</th><th>新发生日</th><th>原档期(周)</th><th>新档期(周)</th><th>目标周</th><th>安装联动</th></tr>'
+        + d.shifts.map(row).join('') + '</table>' : '<p class="muted">没有需要顺延的单。</p>')
+      + (d.blocked.length ? '<h4 style="margin:6px 0">到场/完工拦截（不挪）</h4><table><tr><th>单号</th><th>点位</th><th>画面</th><th>原因</th></tr>'
+        + d.blocked.map(r => `<tr><td>${esc(r.orderNo)}</td><td>${esc(r.siteNo)}</td><td>${esc(r.creativeName)}</td><td>${esc(r.blockReason)}</td></tr>`).join('') + '</table>' : '');
+    if (d.hitCount === 0) hdPendingBatchNo = null;
+  } catch (e) { toast(e.message); }
+}
+async function hdShiftConfirm() {
+  if (!hdPendingBatchNo) { toast('先出顺延预览'); return; }
+  try {
+    const b = await call('POST', '/holidays/shifts/' + encodeURIComponent(hdPendingBatchNo) + '/confirm');
+    toast('批次 ' + b.batchNo + ' 执行完成：顺延 ' + b.shiftedCount + ' 张，跳过 ' + b.skippedCount + ' 张，拦截 ' + b.blockedCount + ' 张', true);
+    hdPendingBatchNo = null; document.getElementById('hdShiftPreview').innerHTML = '';
+    hdLoadBatches();
+  } catch (e) { toast(e.message); }
+}
+
+async function hdLoadBatches() {
+  try {
+    const list = await call('GET', '/holidays/shifts?status=' + encodeURIComponent(val('hdBatchStatus') || ''));
+    document.getElementById('hdBatchTable').innerHTML =
+      '<tr><th>批次号</th><th>状态</th><th>范围</th><th>点位</th><th>日历版</th><th>命中</th><th>顺延</th><th>跳过</th><th>拦截</th><th>经手人</th><th>确认人/时间</th><th></th></tr>'
+      + list.map(b => `<tr><td>${esc(b.batchNo)}</td><td>${hdBatchTag(b.status)}</td>
+        <td>${esc(b.scopeFrom)} ~ ${esc(b.scopeTo)}</td><td>${esc(b.siteNo || '全部')}</td>
+        <td>${b.calendarVersionNo ? 'v' + b.calendarVersionNo : '自然周'}</td>
+        <td>${b.hitCount}</td><td>${b.shiftedCount}</td><td>${b.skippedCount}</td><td>${b.blockedCount}</td>
+        <td>${esc(b.operatorName)}</td><td>${b.confirmOperator ? esc(b.confirmOperator) + ' ' + esc(b.confirmTime || '') : '—'}</td>
+        <td><a href="javascript:void(0)" onclick="hdBatchDetail('${esc(b.batchNo)}')">查逐单</a></td></tr>`).join('')
+      || '<tr><td class="muted">还没有顺延批次</td></tr>';
+  } catch (e) { toast(e.message); }
+}
+async function hdBatchDetail(batchNo) {
+  try {
+    const d = await call('GET', '/holidays/shifts/' + encodeURIComponent(batchNo));
+    document.getElementById('hdBatchDetail').innerHTML =
+      `<h3 style="margin-top:10px">批次 ${esc(batchNo)} 逐单留底（原档期痕迹）</h3>`
+      + '<table><tr><th>单号</th><th>点位</th><th>画面</th><th>原发生日</th><th>新发生日</th><th>原档期(周)</th><th>新档期(周)</th><th>结果</th><th>安装联动</th><th>跳过原因</th></tr>'
+      + d.records.map(r => `<tr><td>${esc(r.orderNo)}</td><td>${esc(r.siteNo)}</td><td>${esc(r.creativeName)}</td>
+        <td>${esc(r.oldOccurDate)}</td><td>${esc(r.newOccurDate || '')}</td>
+        <td>${esc(r.oldWeekStart)} ~ ${esc(r.oldWeekEnd)}</td>
+        <td>${r.newWeekStart ? esc(r.newWeekStart) + ' ~ ' + esc(r.newWeekEnd) : '—'}</td>
+        <td>${hdRecTag(r.status)}</td><td>${hdInstallTag(r.installAction)}</td><td>${esc(r.skipReason || '')}</td></tr>`).join('')
+      + '</table>';
+  } catch (e) { toast(e.message); }
+}
+async function hdLoadTrace() {
+  try {
+    const no = val('hdTraceOrder'); if (!no) { toast('先填上刊单号'); return; }
+    const list = await call('GET', '/holidays/shifts/records?orderNo=' + encodeURIComponent(no));
+    document.getElementById('hdTraceTable').innerHTML =
+      '<tr><th>批次</th><th>原发生日</th><th>新发生日</th><th>原档期(周)</th><th>新档期(周)</th><th>结果</th><th>安装</th></tr>'
+      + list.map(r => `<tr><td>${esc(r.batchNo)}</td><td>${esc(r.oldOccurDate)}</td><td>${esc(r.newOccurDate || '')}</td>
+        <td>${esc(r.oldWeekStart)} ~ ${esc(r.oldWeekEnd)}</td>
+        <td>${r.newWeekStart ? esc(r.newWeekStart) + ' ~ ' + esc(r.newWeekEnd) : '—'}</td>
+        <td>${hdRecTag(r.status)}</td><td>${hdInstallTag(r.installAction)}</td></tr>`).join('')
+      || '<tr><td class="muted">该单没有顺延记录</td></tr>';
   } catch (e) { toast(e.message); }
 }
 

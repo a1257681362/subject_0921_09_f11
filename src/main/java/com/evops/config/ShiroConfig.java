@@ -39,6 +39,8 @@ public class ShiroConfig {
         realm.addAccount("agent2", "agent2", "agent");
         // F10：合规岗（维护受限行业类目名单、批量冻结在途单、解冻/强制落架处置）
         realm.addAccount("compliance1", "compliance1", "compliance");
+        // F11：运营（维护假期日历、按年导入、档期顺延预览确认批量挪单）
+        realm.addAccount("ops1", "ops1", "ops");
         return realm;
     }
 

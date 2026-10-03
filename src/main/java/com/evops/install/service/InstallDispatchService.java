@@ -170,6 +170,147 @@ public class InstallDispatchService {
         appendEvent(dispatch, InstallEnums.EVENT_CANCEL, operator, dispatch.getCancelReason());
     }
 
+    /**
+     * F11 假期顺延联动：上刊单发生日顺延到 newOccurDate 后，未完工派单档期跟着平移
+     * （保留原计划钟点与时长）。
+     * - 无派单/已取消：不联动（NONE）；
+     * - PENDING 待匹配：窗口随移，仍待匹配（RESCHEDULED，无队不发通知）；
+     * - ASSIGNED：队在新窗口空闲→改期并通知到队（RESCHEDULED）；被别的点位占了→转待匹配并通知说明（TO_PENDING）；
+     * - ARRIVED/COMPLETED：不联动（NOT_DONE，预览已拦截不应走到这）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HolidayShiftLink handleHolidayShift(PostingOrder posting, LocalDate newOccurDate,
+                                               String batchNo, Integer calendarVersionNo, String operatorName) {
+        InstallOrder dispatch = findByOrderId(posting.getId());
+        if (dispatch == null || InstallEnums.STATUS_CANCELLED.equals(dispatch.getStatus())) {
+            return new HolidayShiftLink(InstallEnums.INSTALL_NONE, null);
+        }
+        if (InstallEnums.STATUS_ARRIVED.equals(dispatch.getStatus())
+                || InstallEnums.STATUS_COMPLETED.equals(dispatch.getStatus())) {
+            return new HolidayShiftLink(InstallEnums.INSTALL_NOT_DONE, dispatch.getDispatchNo());
+        }
+        String operator = Operators.resolve(operatorName);
+        LocalDateTime oldStart = dispatch.getPlanStart();
+        LocalDateTime oldEnd = dispatch.getPlanEnd();
+        long hours = java.time.Duration.between(oldStart, oldEnd).toHours();
+        LocalDateTime newStart = newOccurDate.atTime(oldStart.toLocalTime());
+        LocalDateTime newEnd = newStart.plusHours(Math.max(hours, 1));
+
+        if (InstallEnums.STATUS_PENDING.equals(dispatch.getStatus())) {
+            dispatch.setPlanStart(newStart);
+            dispatch.setPlanEnd(newEnd);
+            dispatch.setArrivalDeadline(newStart);
+            dispatch.setVersionNo(dispatch.getVersionNo() + 1);
+            dispatch.setOperatorName(operator);
+            orderMapper.updateById(dispatch);
+            mirrorPosting(dispatch, false);
+            appendEvent(dispatch, InstallEnums.EVENT_HOLIDAY_SHIFT, operator,
+                    "假期顺延联动（批次 " + batchNo + "，日历 v" + calendarVersionNo + "）：上刊单 "
+                            + posting.getOrderNo() + " 档期顺延，派单尚无安装队，计划时段随移 "
+                            + oldStart.format(TS) + "~" + oldEnd.format(TS) + " → "
+                            + newStart.format(TS) + "~" + newEnd.format(TS) + "，继续待匹配");
+            return new HolidayShiftLink(InstallEnums.INSTALL_RESCHEDULED, dispatch.getDispatchNo());
+        }
+
+        // ASSIGNED：队新窗口是否空闲（半开区间，排除本单）
+        boolean busy = isTeamBusy(dispatch.getTeamId(), newStart, newEnd, dispatch.getId());
+        if (!busy) {
+            dispatch.setPlanStart(newStart);
+            dispatch.setPlanEnd(newEnd);
+            dispatch.setArrivalDeadline(newStart);
+            dispatch.setRescheduleCount(dispatch.getRescheduleCount() + 1);
+            dispatch.setVersionNo(dispatch.getVersionNo() + 1);
+            dispatch.setOperatorName(operator);
+            orderMapper.updateById(dispatch);
+            mirrorPosting(dispatch, false);
+            int seq = dispatch.getRescheduleCount();
+            insertNotice(dispatch, seq, oldStart, oldEnd, newStart, newEnd,
+                    "假期顺延联动改期（批次 " + batchNo + "）：上刊单 " + posting.getOrderNo()
+                            + " 原档期落休息日，整体顺延至下一工作日");
+            appendEvent(dispatch, InstallEnums.EVENT_HOLIDAY_SHIFT, operator,
+                    "假期顺延联动（批次 " + batchNo + "，日历 v" + calendarVersionNo + "）：安装队「"
+                            + dispatch.getTeamNameSnapshot() + "」新窗口空闲，改期 "
+                            + oldStart.format(TS) + "~" + oldEnd.format(TS) + " → "
+                            + newStart.format(TS) + "~" + newEnd.format(TS) + "，已通知到队（第 " + seq + " 次改期）");
+            return new HolidayShiftLink(InstallEnums.INSTALL_RESCHEDULED, dispatch.getDispatchNo());
+        }
+
+        // 队新窗口被别的点位占：转待匹配并释放原队（team 引用清空，队可接别的活；队名快照保留可翻），通知该队
+        Long teamId = dispatch.getTeamId();
+        InstallOrder blocker = orderMapper.selectOne(new LambdaQueryWrapper<InstallOrder>()
+                .eq(InstallOrder::getTeamId, teamId)
+                .ne(InstallOrder::getStatus, InstallEnums.STATUS_CANCELLED)
+                .lt(InstallOrder::getPlanStart, newEnd)
+                .gt(InstallOrder::getPlanEnd, newStart)
+                .ne(InstallOrder::getId, dispatch.getId())
+                .last("LIMIT 1"));
+        String blockDesc = blocker != null ? " 已排派单 " + blocker.getDispatchNo() : "";
+        int seq = dispatch.getRescheduleCount() + 1;
+        // 通知要在清空队引用前插（通知留的是原队）
+        insertNotice(dispatch, seq, oldStart, oldEnd, newStart, newEnd,
+                "假期顺延联动（批次 " + batchNo + "）：新窗口 " + newStart.format(TS) + "~" + newEnd.format(TS)
+                        + (blocker != null ? " 与派单 " + blocker.getDispatchNo() + " 撞档" : "")
+                        + "，本单转回待匹配另行派队");
+
+        dispatch.setPlanStart(newStart);
+        dispatch.setPlanEnd(newEnd);
+        dispatch.setArrivalDeadline(newStart);
+        dispatch.setStatus(InstallEnums.STATUS_PENDING);
+        dispatch.setAutoMatched(0);
+        dispatch.setTeamId(null);
+        dispatch.setTeamNo(null);
+        dispatch.setRescheduleCount(seq);
+        dispatch.setVersionNo(dispatch.getVersionNo() + 1);
+        dispatch.setOperatorName(operator);
+        orderMapper.updateById(dispatch);
+        // updateById 忽略 null：team 引用要显式置空，真正释放该队档期
+        orderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<InstallOrder>()
+                .eq(InstallOrder::getId, dispatch.getId())
+                .set(InstallOrder::getTeamId, null)
+                .set(InstallOrder::getTeamNo, null));
+        dispatch.setTeamId(null);
+        dispatch.setTeamNo(null);
+        mirrorPosting(dispatch, false);
+        appendEvent(dispatch, InstallEnums.EVENT_HOLIDAY_SHIFT, operator,
+                "假期顺延联动（批次 " + batchNo + "，日历 v" + calendarVersionNo + "）：安装队「"
+                        + dispatch.getTeamNameSnapshot() + "」在新窗口 " + newStart.format(TS) + "~"
+                        + newEnd.format(TS) + blockDesc
+                        + "，一个队同一时段只排一个点位，派单转回待匹配并释放该队，已通知（第 " + seq + " 次改期）");
+        return new HolidayShiftLink(InstallEnums.INSTALL_TO_PENDING, dispatch.getDispatchNo());
+    }
+
+    /** F11 顺延联动结果：action 取 InstallEnums.INSTALL_*。 */
+    public static class HolidayShiftLink {
+        private final String action;
+        private final String dispatchNo;
+
+        public HolidayShiftLink(String action, String dispatchNo) {
+            this.action = action;
+            this.dispatchNo = dispatchNo;
+        }
+
+        public String getAction() { return action; }
+        public String getDispatchNo() { return dispatchNo; }
+    }
+
+    private void insertNotice(InstallOrder dispatch, int seq, LocalDateTime oldStart, LocalDateTime oldEnd,
+                              LocalDateTime newStart, LocalDateTime newEnd, String reason) {
+        InstallNotice notice = new InstallNotice();
+        notice.setDispatchId(dispatch.getId());
+        notice.setDispatchNo(dispatch.getDispatchNo());
+        notice.setTeamId(dispatch.getTeamId());
+        notice.setTeamNo(dispatch.getTeamNo());
+        notice.setSeq(seq);
+        notice.setOldStart(oldStart);
+        notice.setOldEnd(oldEnd);
+        notice.setNewStart(newStart);
+        notice.setNewEnd(newEnd);
+        notice.setReason(trimTo(reason, 255));
+        notice.setOperatorName(dispatch.getOperatorName());
+        notice.setNoticeTime(LocalDateTime.now());
+        noticeMapper.insert(notice);
+    }
+
     // ---- 匹配引擎 ----
 
     /**

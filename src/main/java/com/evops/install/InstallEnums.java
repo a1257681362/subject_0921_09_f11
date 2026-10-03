@@ -65,6 +65,18 @@ public final class InstallEnums {
     public static final String EVENT_CANCEL = "CANCEL";
     /** 改期通知到队 */
     public static final String EVENT_NOTIFY = "NOTIFY";
+    /** F11 假期顺延联动：随上刊单档期顺延改期（或队冲突转待匹配） */
+    public static final String EVENT_HOLIDAY_SHIFT = "HOLIDAY_SHIFT";
+
+    // ---- F11 顺延联动结果（假期顺延批次记录行 install_action 用） ----
+    /** 没有安装派单，无需联动 */
+    public static final String INSTALL_NONE = "NONE";
+    /** 派单联动改期并通知到队（含 PENDING 单窗口随移） */
+    public static final String INSTALL_RESCHEDULED = "RESCHEDULED";
+    /** 队新档期被占，派单转待匹配 */
+    public static final String INSTALL_TO_PENDING = "TO_PENDING";
+    /** 派单已到场/完工，不联动（整单在预览拦截，不应执行到） */
+    public static final String INSTALL_NOT_DONE = "NOT_DONE";
 
     // ---- 匹配结果明细口径（MATCH 事件 detail 用） ----
     public static final String MATCH_AUTO = "AUTO";
