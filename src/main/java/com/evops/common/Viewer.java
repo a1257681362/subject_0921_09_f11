@@ -21,12 +21,20 @@ public class Viewer {
     private final boolean canApprove;
     /** 可维护受限行业类目名单与处置合规冻结（合规岗/系统） */
     private final boolean listAdmin;
+    /** 系统角色：可维护假期日历与执行假期顺延 */
+    private final boolean systemAdmin;
 
     private Viewer(String username, boolean allCustomers, boolean canApprove, boolean listAdmin) {
+        this(username, allCustomers, canApprove, listAdmin, false);
+    }
+
+    private Viewer(String username, boolean allCustomers, boolean canApprove, boolean listAdmin,
+                   boolean systemAdmin) {
         this.username = username;
         this.allCustomers = allCustomers;
         this.canApprove = canApprove;
         this.listAdmin = listAdmin;
+        this.systemAdmin = systemAdmin;
     }
 
     public static Viewer sales(String username) {
@@ -38,7 +46,7 @@ public class Viewer {
     }
 
     public static Viewer system(String username) {
-        return new Viewer(username, true, true, true);
+        return new Viewer(username, true, true, true, true);
     }
 
     /** 合规岗：跨销售看全部客户（批量冻结要命中全部在途单），但不能审批额度 */
@@ -105,11 +113,20 @@ public class Viewer {
         }
     }
 
+    /** 假期日历维护与假期顺延执行只认系统角色。 */
+    public void requireSystemAdmin() {
+        if (!systemAdmin) {
+            throw new BusinessException("只有系统角色可以维护假期日历与执行假期顺延");
+        }
+    }
+
     public String getUsername() { return username; }
     public boolean isAllCustomers() { return allCustomers; }
     public boolean isCanApprove() { return canApprove; }
     /** 是否合规岗/系统（可维护名单、处置冻结） */
     public boolean isListAdmin() { return listAdmin; }
+    /** 是否系统角色（可维护假期日历、执行假期顺延） */
+    public boolean isSystemAdmin() { return systemAdmin; }
     /** 是否销售（受限）视角 */
     public boolean isScoped() { return !allCustomers; }
 }

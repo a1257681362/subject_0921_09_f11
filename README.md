@@ -20,7 +20,7 @@
 - **外部回执**：挂回原单据；回执指向对冲单时自动回溯到根单。
 - **月度档期周历**：`/api/ledger/calendar?period=yyyy-MM` 一眼看哪块屏哪周空着。
 
-账号：演示账号 `demo / demo`，骨架账号 `bootstrap / bootstrap`（均为财务/系统视角，看全部客户、可审批）；F5 销售账号 `sales1 / sales1`、`sales2 / sales2`（只见名下客户），财务账号 `finance1 / finance1`；F6 巡查账号 `inspector1 / inspector1`（现场上报）、维护商账号 `vendor1 / vendor1`（回传处理结果），派单与复勘用 `demo / demo`；F8 安装师傅账号 `installer1 / installer1`（到场打卡、完工回传），安装派单匹配/改期用 `demo / demo`；F9 代理账号 `agent1 / agent1`、`agent2 / agent2`（只能查自己账单），代理建档挂协议/调比例/出结算用 `demo / demo` 或 `finance1 / finance1`；F10 合规岗账号 `compliance1 / compliance1`（维护受限行业名单、批量冻结与处置），名单维护与冻结处置也可用 `demo / demo`。
+账号：演示账号 `demo / demo`，骨架账号 `bootstrap / bootstrap`（均为财务/系统视角，看全部客户、可审批）；F5 销售账号 `sales1 / sales1`、`sales2 / sales2`（只见名下客户），财务账号 `finance1 / finance1`；F6 巡查账号 `inspector1 / inspector1`（现场上报）、维护商账号 `vendor1 / vendor1`（回传处理结果），派单与复勘用 `demo / demo`；F8 安装师傅账号 `installer1 / installer1`（到场打卡、完工回传），安装派单匹配/改期用 `demo / demo`；F9 代理账号 `agent1 / agent1`、`agent2 / agent2`（只能查自己账单），代理建档挂协议/调比例/出结算用 `demo / demo` 或 `finance1 / finance1`；F10 合规岗账号 `compliance1 / compliance1`（维护受限行业名单、批量冻结与处置），名单维护与冻结处置也可用 `demo / demo`；F11 假期日历导入发布与顺延执行只认系统账号 `demo / demo`。
 
 ## F2：素材流水与多规格转档（f2-asset-transcode-1）
 
@@ -176,6 +176,21 @@
 
 类目名单模块：类目名单主档（全公司一份，当前生效版本指针）+ 名单条目（行业类目+受限依据，随版本冻结）；类目名单版本（调整另起新版、发布即时生效、旧版自动取代，经手人/发布时刻/调整说明留底，版本链即操作记录）；类目名单状态（`DRAFT 编制中 / EFFECTIVE 生效中 / SUPERSEDED 已被新版取代`）。
 
+## F11：假期日历与安装派单顺延（f11-holiday-calendar-1）
+
+十月假期一调整，运营手工挪单挪到凌晨两点——假期日历收进 evops-base：休息日/调休上班日按年导入，发布即生效；计划落在休息日的在途安装派单系统算好新档期，先预览确认再批量顺延，挪过的单子原档期留痕，扯皮有据可查。
+
+业务口径：
+
+- **假期日历按年一份**：一个自然年一份（年份唯一），日历编号 `HC+序列`；休息日（`REST`）与调休上班日（`MAKEUP_WORK`）分开维护，同一版本内一个日期只能落一边，日期必须落在导入年份内。
+- **日历按年导入，覆盖之前先比对差异**：整表替换式导入（该年已有编制中草稿则整表覆盖草稿，否则另起新草稿版）；导入即返回与当前生效版的差异比对（新增/移除/变更逐日明细），确认后发布才覆盖生效版。发布即时生效（顺延口径实时读生效版，无缓存），旧生效版自动 `SUPERSEDED`；经手人/发布时刻/导入说明随版本留底，版本链即操作记录。
+- **休息日顺延到下一个工作日，调休上班日不动**：顺延只挡显式维护的休息日（普通周末照常派单）；调休上班日是工作日，计划落在上面不动。命中 = 在途（待匹配/已派单）且计划时段 `[planStart, planEnd)` 覆盖到休息日；新档期 = 整体往后平移整数天（时刻与时长不变），直到覆盖日期不含休息日。
+- **顺延先出预览，确认了再批量执行**：预览逐单给出新档期与可挪性预检（队档期冲突、高空证到期先标出来）；确认后一批执行——已派单过资质与队档期校验（队行锁串行化）并落改期通知到队，待匹配单直接挪。**队档期撞了不硬挪**：记录行标 `FAILED` 带原因，单留原档期人工改期。
+- **顺延过的单子留原档期痕迹**：每单顺延写 `HOLIDAY_SHIFT` 事件（带单据快照）、已派单写改期通知（新旧档期）；顺延批次（依据日历版本、命中/顺延/失败数、经手人）+ 逐单记录（原档期/新档期/成败原因）全留底。挪过的单不再落在休息日，重扫自然不再命中，重复执行幂等；并发改档由条件更新兜底，不硬挪。
+- **维护与顺延只认系统角色**：日历导入/发布、顺延预览/执行/批次翻查只认系统（system）角色；查看日历与版本链不限登录角色。
+
+假期日历模块：假期日历（年份唯一、当前生效版本指针）+ 日历日期（休息日/调休上班日随版本冻结）；假期日历版本（按年导入即草稿、发布生效旧版取代，版本链即操作记录）；假期日历状态（主档 `DRAFT 编制中 / EFFECTIVE 生效中`，版本 `DRAFT / EFFECTIVE / SUPERSEDED`；顺延记录 `SHIFTED 已顺延 / FAILED 顺延失败`）。
+
 ## 接口一览（均在 /api 下，除 health/login 外需登录）
 
 | 动作 | 接口 |
@@ -232,16 +247,19 @@
 | 冻结命中预览 / 批量冻结 / 批次翻查 / 批次明细（合规岗） | `GET /api/compliance/freeze/preview?categories=`、`POST /api/compliance/freeze`、`GET /api/compliance/freeze/batches`、`GET /api/compliance/freeze/batches/{batchNo}` |
 | 冻结单解冻 / 强制落架（合规岗） | `POST /api/compliance/orders/{orderNo}/unfreeze`、`POST /api/compliance/orders/{orderNo}/force-take-down` |
 | 历史客户行业类目补录（合规岗/系统） | `POST /api/credit/customers/{customerNo}/industry-category` |
+| 假期日历：按年导入（出差异比对）/ 翻查 / 版本链 / 版本详情 | `POST /api/holiday-calendars/import`、`GET /api/holiday-calendars?year=`、`GET /api/holiday-calendars/{id}/versions`、`GET /api/holiday-calendars/versions/{versionId}` |
+| 假期日历发布生效（旧版自动取代） | `POST /api/holiday-calendars/versions/{versionId}/publish` |
+| 假期顺延：预览 / 确认批量执行 / 批次翻查 / 批次明细 | `GET /api/holiday-shifts/preview?year=`、`POST /api/holiday-shifts`、`GET /api/holiday-shifts/batches`、`GET /api/holiday-shifts/batches/{batchNo}` |
 
 授信上刊仍走上刊接口 `POST /api/orders`，请求体带 `quoteNo`（引用已提交报价单）即为授信单；落架/对冲接口不变，撤刊即释放额度。
 
-演示界面：启动后浏览器打开根路径 `/`（周例会演示用，十五个页签覆盖全流程）。
+演示界面：启动后浏览器打开根路径 `/`（周例会演示用，十六个页签覆盖全流程）。
 
 ## 启动
 
 1. 执行 `mvn -q -DskipTests compile` 验证骨架构建。
 2. 执行 `mvn spring-boot:run` 启动应用；Spring Boot 会自动执行 `src/main/resources/schema.sql`。
 3. H2 数据文件默认写入工作区 `data/evops`。如需修改路径，编辑 `application.yml` 中的 `jdbc:h2:file:` 连接串。
-4. 验证：`mvn test`（11 项底账口径测试 + 7 项素材转档测试 + 8 项坐标建档测试 + 13 项年度刊例计价测试 + 13 项客户授信回款测试 + 10 项异常上报整改测试 + 11 项屏体播放排片测试 + 12 项安装派单资质匹配测试 + 12 项代理协议结算测试 + 2 项受限行业名单测试，独立内存 H2）。
+4. 验证：`mvn test`（11 项底账口径测试 + 7 项素材转档测试 + 8 项坐标建档测试 + 13 项年度刊例计价测试 + 13 项客户授信回款测试 + 10 项异常上报整改测试 + 11 项屏体播放排片测试 + 12 项安装派单资质匹配测试 + 12 项代理协议结算测试 + 2 项受限行业名单测试 + 8 项假期日历顺延测试，独立内存 H2）。
 
 表结构交付副本：`docs/schema/evops.sql`（容器内根目录 `../../docs/schema` 不可写，交付副本置于工作区内），应与 `src/main/resources/schema.sql` 保持一致。

@@ -85,6 +85,7 @@
     <div class="tab" data-tab="install">⑬ 安装派单资质</div>
     <div class="tab" data-tab="agent">⑭ 代理协议结算</div>
     <div class="tab" data-tab="compliance">⑮ 受限行业名单</div>
+    <div class="tab" data-tab="holiday">⑯ 假期日历顺延</div>
   </div>
 
   <!-- 点位挂牌 -->
@@ -778,6 +779,39 @@
       </div>
     </div>
   </div>
+
+  <div class="panel" id="panel-holiday">
+    <p class="muted">假期日历按年导入（系统账号 demo）：休息日/调休上班日分开维护，导入先出差异比对、确认再发布覆盖；计划落在休息日的在途安装派单顺延到下一个工作日（调休上班日不动），先预览确认再批量执行，原档期留痕。查看日历不限角色。</p>
+
+    <h3>按年导入假期日历（整表替换式，覆盖前先比对差异）</h3>
+    <div class="grid">
+      <div><label>导入年份 *</label><input id="hcYear" placeholder="如 2026"></div>
+      <div><label>导入说明（随版本留底）</label><input id="hcSummary" placeholder="如 2026 年国务院节假日安排"></div>
+    </div>
+    <div class="grid">
+      <div class="span2"><label>整表日期（每行一条：日期|类型|名称；类型 = REST 休息日 / MAKEUP_WORK 调休上班日）</label><textarea id="hcDays" rows="6" placeholder="2026-10-01|REST|国庆节&#10;2026-10-02|REST|国庆节&#10;2026-10-11|MAKEUP_WORK|调休上班"></textarea></div>
+    </div>
+    <div class="actions">
+      <button onclick="hcImport()">按年导入（出差异比对）</button>
+      <button class="gray" onclick="hcLoadCalendars()">刷新日历</button>
+    </div>
+    <div id="hcImportResult"></div>
+    <table id="hcCalendarTable"></table>
+    <div id="hcVersionBox"></div>
+
+    <h3>假期顺延（先预览，确认后批量执行）</h3>
+    <div class="grid">
+      <div><label>顺延依据年份 *</label><input id="hcShiftYear" placeholder="如 2026"></div>
+      <div><label>顺延原因</label><input id="hcShiftReason" placeholder="默认：假期日历调整，休息日顺延"></div>
+      <div style="align-self:end;display:flex;gap:8px">
+        <button class="gray" onclick="hcPreview()">顺延预览</button>
+        <button class="warn" onclick="hcExecute()">确认批量顺延</button>
+      </div>
+    </div>
+    <div id="hcPreview"></div>
+    <table id="hcBatchTable"></table>
+    <div id="hcBatchDetail"></div>
+  </div>
 </div>
 
 <script>
@@ -826,7 +860,7 @@ async function doLogin() {
 async function init() {
   // header 占位（登录后填充）
   document.body.insertAdjacentHTML('afterbegin',
-    '<header><h1>户外广告点位与上刊底账 <span class="muted" style="color:#c8d4e6">EVOPS f1·f2·f3·f4·f5·f6·f7·f8·f9·f10</span></h1><span class="who"></span></header>');
+    '<header><h1>户外广告点位与上刊底账 <span class="muted" style="color:#c8d4e6">EVOPS f1·f2·f3·f4·f5·f6·f7·f8·f9·f10·f11</span></h1><span class="who"></span></header>');
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
@@ -839,6 +873,7 @@ async function init() {
     if (t.dataset.tab === 'install') { inLoadTeams(); inLoad(); document.getElementById('inPeriod').value = new Date().toISOString().slice(0,7); }
     if (t.dataset.tab === 'agent') { agLoadAgents(); agLoadAgreements(); agLoadSettlements(); }
     if (t.dataset.tab === 'compliance') { clLoadEffective(); clLoadVersions(); clLoadBatches(); }
+    if (t.dataset.tab === 'holiday') { hcLoadCalendars(); hcLoadBatches(); }
   });
   document.getElementById('calPeriod').value = new Date().toISOString().slice(0, 7);
   try { const me = await call('GET', '/me'); showApp(me.username); loadSites(); loadSpecs(); clRefreshEffectiveCache(); } catch (e) { showLogin(); }
@@ -2351,6 +2386,155 @@ async function clForceTakeDown() {
     await call('POST', '/compliance/orders/' + encodeURIComponent(val('clOrderNo')) + '/force-take-down', { reason: val('clDisposeReason') });
     toast('已强制落架', true); clLoadBatches();
   } catch (e) { toast(e.message); }
+}
+
+/* ===== F11 假期日历与安装派单顺延 ===== */
+let hcOpenCalendarId = null;
+
+function hcStatusTag(s) { return { DRAFT: '<span class="tag pending">编制中</span>', EFFECTIVE: '<span class="tag success">生效中</span>', SUPERSEDED: '<span class="tag">已取代</span>' }[s] || esc(s); }
+function hcKindTag(k) { return k === 'REST' ? '<span class="tag offset">休息日</span>' : (k === 'MAKEUP_WORK' ? '<span class="tag success">调休上班日</span>' : esc(k)); }
+function hcRecTag(s) { return { SHIFTED: '<span class="tag success">已顺延</span>', FAILED: '<span class="tag down">顺延失败</span>' }[s] || esc(s); }
+
+function hcParseDays() {
+  const lines = document.getElementById('hcDays').value.split('\n').map(s => s.trim()).filter(s => s);
+  if (!lines.length) throw new Error('日期列表不能为空：每行一条「日期|类型|名称」');
+  return lines.map(line => {
+    const parts = line.split('|').map(s => s.trim());
+    if (parts.length < 2 || !parts[0]) throw new Error('日期行格式应为「日期|类型|名称」：' + line);
+    let kind = parts[1].toUpperCase();
+    if (kind === '休息日') kind = 'REST';
+    if (kind === '调休上班日' || kind === '调休') kind = 'MAKEUP_WORK';
+    return { date: parts[0], kind: kind, name: parts[2] || undefined };
+  });
+}
+
+async function hcImport() {
+  const year = val('hcYear'); if (!year) { toast('先填导入年份'); return; }
+  try {
+    const d = await call('POST', '/holiday-calendars/import', { year: Number(year), days: hcParseDays(), changeSummary: val('hcSummary') });
+    hcRenderVersion(d);
+    toast('草稿 v' + d.version.versionNo + ' 已就绪：新增 ' + d.addedCount + '、移除 ' + d.removedCount + '、变更 ' + d.changedCount
+      + '，确认差异后点「发布生效」覆盖旧版', true);
+    hcLoadCalendars();
+  } catch (e) { toast(e.message); }
+}
+
+function hcRenderVersion(d) {
+  const v = d.version;
+  let html = '<h3 style="margin-top:10px">' + d.calendar.calYear + ' 年假期日历 v' + v.versionNo + ' ' + hcStatusTag(v.status) + '</h3>';
+  if (v.status === 'DRAFT') {
+    html += '<p>与当前生效版比对：新增 <b>' + d.addedCount + '</b>、移除 <b>' + d.removedCount + '</b>、变更 <b>' + d.changedCount + '</b>'
+      + (d.sameAsEffective ? '（与生效版完全一致，不必发布）' : '')
+      + ' <button class="warn" style="margin-left:10px" onclick="hcPublish(' + v.id + ')">确认发布生效（覆盖旧版）</button></p>';
+  }
+  if (d.diffItems && d.diffItems.length) {
+    html += '<table><tr><th>变化</th><th>日期</th><th>新类型</th><th>新名称</th><th>原类型</th><th>原名称</th></tr>'
+      + d.diffItems.map(i => '<tr><td>' + ({ ADDED: '新增', REMOVED: '移除', CHANGED: '变更' }[i.changeType] || esc(i.changeType)) + '</td>'
+        + '<td>' + esc(i.date) + '</td><td>' + hcKindTag(i.kind) + '</td><td>' + esc(i.name || '') + '</td>'
+        + '<td>' + (i.oldKind ? hcKindTag(i.oldKind) : '') + '</td><td>' + esc(i.oldName || '') + '</td></tr>').join('') + '</table>';
+  }
+  html += '<details style="margin-top:6px"><summary>本版全量日期（' + d.days.length + ' 天）</summary>'
+    + '<table><tr><th>日期</th><th>类型</th><th>名称</th></tr>'
+    + d.days.map(x => '<tr><td>' + esc(x.dayDate) + '</td><td>' + hcKindTag(x.dayKind) + '</td><td>' + esc(x.dayName || '') + '</td></tr>').join('')
+    + '</table></details>';
+  document.getElementById('hcImportResult').innerHTML = html;
+}
+
+async function hcLoadCalendars() {
+  try {
+    const list = await call('GET', '/holiday-calendars');
+    document.getElementById('hcCalendarTable').innerHTML =
+      '<tr><th>年份</th><th>日历编号</th><th>状态</th><th>当前生效版本</th><th>经手人</th><th>操作</th></tr>'
+      + list.map(c => '<tr><td><b>' + c.calYear + '</b></td><td>' + esc(c.calendarNo) + '</td><td>' + hcStatusTag(c.status) + '</td>'
+        + '<td>' + (c.currentVersionNo ? 'v' + c.currentVersionNo : '—') + '</td><td>' + esc(c.operatorName) + '</td>'
+        + '<td><a href="javascript:void(0)" onclick="hcLoadVersions(' + c.id + ')">看版本链</a></td></tr>').join('')
+      || '<tr><td class="muted">还没有假期日历，先按年导入</td></tr>';
+  } catch (e) { toast(e.message); }
+}
+
+async function hcLoadVersions(calendarId) {
+  hcOpenCalendarId = calendarId;
+  try {
+    const list = await call('GET', '/holiday-calendars/' + calendarId + '/versions');
+    document.getElementById('hcVersionBox').innerHTML =
+      '<h3 style="margin-top:10px">版本链（版本即操作记录）</h3>'
+      + '<table><tr><th>版本</th><th>状态</th><th>休息日</th><th>调休上班日</th><th>导入说明</th><th>经手人</th><th>发布时刻</th><th>操作</th></tr>'
+      + list.map(v => '<tr><td>v' + v.versionNo + '</td><td>' + hcStatusTag(v.status) + '</td><td>' + v.restCount + '</td><td>' + v.makeupCount + '</td>'
+        + '<td>' + esc(v.changeSummary || '') + '</td><td>' + esc(v.operatorName) + '</td><td>' + esc(v.publishTime || '') + '</td>'
+        + '<td><a href="javascript:void(0)" onclick="hcShowVersion(' + v.id + ')">看日期与差异</a>'
+        + (v.status === 'DRAFT' ? ' <a href="javascript:void(0)" onclick="hcPublish(' + v.id + ')">发布</a>' : '') + '</td></tr>').join('')
+      + '</table>';
+  } catch (e) { toast(e.message); }
+}
+
+async function hcShowVersion(id) {
+  try { hcRenderVersion(await call('GET', '/holiday-calendars/versions/' + id)); } catch (e) { toast(e.message); }
+}
+
+async function hcPublish(versionId) {
+  try {
+    const v = await call('POST', '/holiday-calendars/versions/' + versionId + '/publish');
+    toast('v' + v.versionNo + ' 已发布生效，旧生效版自动取代', true);
+    hcLoadCalendars(); hcShowVersion(v.id);
+    if (hcOpenCalendarId) hcLoadVersions(hcOpenCalendarId);
+  } catch (e) { toast(e.message); }
+}
+
+async function hcPreview() {
+  const year = val('hcShiftYear'); if (!year) { toast('先填顺延依据年份'); return; }
+  try {
+    const d = await call('GET', '/holiday-shifts/preview?year=' + encodeURIComponent(year));
+    document.getElementById('hcPreview').innerHTML =
+      '<p>依据 ' + d.calYear + ' 年假期日历 v' + d.versionNo + '：命中在途派单 <b>' + d.hitCount + '</b> 张，可顺延 <b>'
+      + d.feasibleCount + '</b> 张，挪不动 <b>' + d.blockedCount + '</b> 张（执行时标失败不硬挪）。</p>'
+      + (d.items && d.items.length
+        ? '<table><tr><th>派单号</th><th>上刊单</th><th>点位</th><th>安装队</th><th>状态</th><th>原档期</th><th>新档期</th><th>命中休息日</th><th>预检</th></tr>'
+          + d.items.map(i => '<tr><td>' + esc(i.dispatchNo) + '</td><td>' + esc(i.orderNo || '') + '</td><td>' + esc(i.siteNo || '') + '</td>'
+            + '<td>' + esc(i.teamName || i.teamNo || '（待匹配）') + '</td><td>' + esc(i.dispatchStatus) + '</td>'
+            + '<td>' + esc(i.oldPlanStart) + ' ~ ' + esc(i.oldPlanEnd) + '</td>'
+            + '<td><b>' + esc(i.newPlanStart) + ' ~ ' + esc(i.newPlanEnd) + '</b></td>'
+            + '<td>' + (i.restDays || []).join('、') + '</td>'
+            + '<td>' + (i.feasible ? '<span class="tag success">可顺延</span>' : '<span class="tag down">挪不动</span> ' + esc(i.blockReason || '')) + '</td></tr>').join('') + '</table>'
+        : '<p class="muted">没有计划落在休息日的在途派单，无需顺延。</p>');
+  } catch (e) { toast(e.message); }
+}
+
+async function hcExecute() {
+  const year = val('hcShiftYear'); if (!year) { toast('先填顺延依据年份'); return; }
+  try {
+    const d = await call('POST', '/holiday-shifts', { year: Number(year), reason: val('hcShiftReason') });
+    toast('批次 ' + d.batch.batchNo + ' 执行完成：顺延 ' + d.batch.shiftedCount + ' 张，失败 ' + d.batch.failedCount + ' 张', d.batch.failedCount === 0);
+    hcRenderBatch(d);
+    document.getElementById('hcPreview').innerHTML = '';
+    hcLoadBatches();
+  } catch (e) { toast(e.message); }
+}
+
+function hcRenderBatch(d) {
+  document.getElementById('hcBatchDetail').innerHTML =
+    '<h3 style="margin-top:10px">批次 ' + esc(d.batch.batchNo) + ' 逐单记录（原档期留痕，扯皮有据）</h3>'
+    + '<table><tr><th>派单号</th><th>上刊单</th><th>点位</th><th>安装队</th><th>原档期</th><th>新档期</th><th>结果</th><th>失败原因</th></tr>'
+    + d.records.map(r => '<tr><td>' + esc(r.dispatchNo) + '</td><td>' + esc(r.orderNo || '') + '</td><td>' + esc(r.siteNo || '') + '</td>'
+      + '<td>' + esc(r.teamNo || '（待匹配）') + '</td>'
+      + '<td>' + esc(r.oldPlanStart || '') + ' ~ ' + esc(r.oldPlanEnd || '') + '</td>'
+      + '<td>' + (r.newPlanStart ? '<b>' + esc(r.newPlanStart) + ' ~ ' + esc(r.newPlanEnd) + '</b>' : '—') + '</td>'
+      + '<td>' + hcRecTag(r.status) + '</td><td>' + esc(r.failReason || '') + '</td></tr>').join('') + '</table>';
+}
+
+async function hcLoadBatches() {
+  try {
+    const list = await call('GET', '/holiday-shifts/batches');
+    document.getElementById('hcBatchTable').innerHTML =
+      '<tr><th>批次号</th><th>依据日历</th><th>命中</th><th>已顺延</th><th>失败</th><th>原因</th><th>经手人</th><th>时间</th><th></th></tr>'
+      + list.map(b => '<tr><td>' + esc(b.batchNo) + '</td><td>' + b.calYear + ' 年 v' + b.calendarVersionNo + '</td>'
+        + '<td>' + b.scannedCount + '</td><td>' + b.shiftedCount + '</td><td>' + b.failedCount + '</td>'
+        + '<td>' + esc(b.reason || '') + '</td><td>' + esc(b.operatorName) + '</td><td>' + esc(b.createTime) + '</td>'
+        + '<td><a href="javascript:void(0)" onclick="hcBatchDetail(\'' + esc(b.batchNo) + '\')">查明细</a></td></tr>').join('')
+      || '<tr><td class="muted">还没有顺延批次</td></tr>';
+  } catch (e) { /* 非系统角色看不了批次，静默 */ }
+}
+async function hcBatchDetail(batchNo) {
+  try { hcRenderBatch(await call('GET', '/holiday-shifts/batches/' + encodeURIComponent(batchNo))); } catch (e) { toast(e.message); }
 }
 
 init();

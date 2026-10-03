@@ -1,6 +1,7 @@
 package com.evops.install.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.evops.asset.support.ImageFingerprints;
 import com.evops.common.BusinessException;
 import com.evops.install.InstallEnums;
@@ -326,6 +327,113 @@ public class InstallDispatchService {
                         + (request.getReason() != null && !request.getReason().trim().isEmpty()
                         ? "；原因：" + request.getReason().trim() : "")
                         + "（第 " + seq + " 次改期）");
+        return dispatch;
+    }
+
+    // ---- 假期顺延（F11：计划落在休息日，批量顺移到下一个工作日） ----
+
+    /**
+     * 假期顺延可行性预检：返回 null 表示可顺延，否则返回不可顺延原因。
+     * 待匹配单无队随时可挪；已派单单与人工改期同口径——高空资质按新计划日校验、队档期不许撞。
+     */
+    public String holidayShiftBlockReason(InstallOrder dispatch, LocalDateTime newStart, LocalDateTime newEnd) {
+        if (!InstallEnums.STATUS_PENDING.equals(dispatch.getStatus())
+                && !InstallEnums.STATUS_ASSIGNED.equals(dispatch.getStatus())) {
+            return "当前状态是「" + InstallEnums.statusLabel(dispatch.getStatus()) + "」，只在途单（待匹配/已派单）可顺延";
+        }
+        if (InstallEnums.STATUS_ASSIGNED.equals(dispatch.getStatus())) {
+            InstallTeam team = teamMapper.selectById(dispatch.getTeamId());
+            LocalDate newPlanDate = newStart.toLocalDate();
+            if (!teamService.isQualified(team, dispatch.getWorkType(), newPlanDate)) {
+                return InstallEnums.isHighAltitude(dispatch.getWorkType())
+                        ? teamService.highAltitudeBlockReason(team, newPlanDate)
+                        : "安装队资质不合格，不能顺延到该日";
+            }
+            if (isTeamBusy(dispatch.getTeamId(), newStart, newEnd, dispatch.getId())) {
+                return "安装队「" + dispatch.getTeamNameSnapshot() + "」在新档期 " + newStart.format(TS) + "~"
+                        + newEnd.format(TS) + " 已排了别的点位，一个队同一时段只能排一个点位";
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 假期顺延：把在途派单的计划时段整体平移到新档期（时长与时刻不变，由假期域算好）。
+     * 已派单单过资质与队档期校验（队行锁串行化）、落改期通知到队；待匹配单直接挪。
+     * 条件更新兜底：档期/状态在并发下已被别人改动则不硬挪，抛错由批次记 FAILED。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InstallOrder holidayShift(String dispatchNo, LocalDateTime newStart, LocalDateTime newEnd,
+                                     String operatorName, String reason) {
+        InstallOrder dispatch = requireByNo(dispatchNo);
+        String operator = Operators.resolve(operatorName);
+        validateWindow(newStart, newEnd);
+        String block = holidayShiftBlockReason(dispatch, newStart, newEnd);
+        if (block != null) {
+            throw new BusinessException("顺延失败：" + block);
+        }
+        boolean assigned = InstallEnums.STATUS_ASSIGNED.equals(dispatch.getStatus());
+        InstallTeam team = null;
+        if (assigned) {
+            // 锁住该队串行化：并发两张单顺移到同一时段时，后一个看到档期已占
+            team = teamMapper.lockById(dispatch.getTeamId());
+            if (isTeamBusy(team.getId(), newStart, newEnd, dispatch.getId())) {
+                throw new BusinessException("顺延失败：安装队「" + team.getTeamName() + "」在新档期 "
+                        + newStart.format(TS) + "~" + newEnd.format(TS)
+                        + " 已排了别的点位，一个队同一时段只能排一个点位");
+            }
+        }
+
+        LocalDateTime oldStart = dispatch.getPlanStart();
+        LocalDateTime oldEnd = dispatch.getPlanEnd();
+        int newCount = dispatch.getRescheduleCount() + 1;
+        int newVersion = dispatch.getVersionNo() + 1;
+        LambdaUpdateWrapper<InstallOrder> uw = new LambdaUpdateWrapper<InstallOrder>()
+                .eq(InstallOrder::getId, dispatch.getId())
+                .eq(InstallOrder::getStatus, dispatch.getStatus())
+                .eq(InstallOrder::getPlanStart, oldStart)
+                .eq(InstallOrder::getPlanEnd, oldEnd)
+                .set(InstallOrder::getPlanStart, newStart)
+                .set(InstallOrder::getPlanEnd, newEnd)
+                .set(InstallOrder::getArrivalDeadline, newStart)
+                .set(InstallOrder::getRescheduleCount, newCount)
+                .set(InstallOrder::getVersionNo, newVersion)
+                .set(InstallOrder::getOperatorName, operator);
+        if (orderMapper.update(null, uw) == 0) {
+            throw new BusinessException("顺延失败：派单档期已被其他操作变更，请重新预览后再执行");
+        }
+        dispatch.setPlanStart(newStart);
+        dispatch.setPlanEnd(newEnd);
+        dispatch.setArrivalDeadline(newStart);
+        dispatch.setRescheduleCount(newCount);
+        dispatch.setVersionNo(newVersion);
+        dispatch.setOperatorName(operator);
+        mirrorPosting(dispatch, false);
+
+        String reasonText = reason == null || reason.trim().isEmpty()
+                ? "假期日历调整，休息日顺延" : reason.trim();
+        if (assigned) {
+            InstallNotice notice = new InstallNotice();
+            notice.setDispatchId(dispatch.getId());
+            notice.setDispatchNo(dispatch.getDispatchNo());
+            notice.setTeamId(team.getId());
+            notice.setTeamNo(team.getTeamNo());
+            notice.setSeq(newCount);
+            notice.setOldStart(oldStart);
+            notice.setOldEnd(oldEnd);
+            notice.setNewStart(newStart);
+            notice.setNewEnd(newEnd);
+            notice.setReason(trimTo(reasonText, 255));
+            notice.setOperatorName(operator);
+            notice.setNoticeTime(LocalDateTime.now());
+            noticeMapper.insert(notice);
+        }
+        appendEvent(dispatch, InstallEnums.EVENT_HOLIDAY_SHIFT, operator,
+                "假期顺延：原档期 " + oldStart.format(TS) + "~" + oldEnd.format(TS)
+                        + " 落在假期日历休息日，顺移到 " + newStart.format(TS) + "~" + newEnd.format(TS)
+                        + "（" + reasonText + "）"
+                        + (assigned ? "；已通知安装队「" + dispatch.getTeamNameSnapshot() + "」（第 "
+                        + newCount + " 次改期）" : "（待匹配，无安装队通知）"));
         return dispatch;
     }
 

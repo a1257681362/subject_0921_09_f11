@@ -60,6 +60,8 @@ public final class InstallEnums {
     public static final String EVENT_AUTO_CREATE = "AUTO_CREATE";
     public static final String EVENT_MATCH = "MATCH";
     public static final String EVENT_RESCHEDULE = "RESCHEDULE";
+    /** 假期顺延：计划落在假期日历休息日，批量顺移到下一个工作日（原档期留痕） */
+    public static final String EVENT_HOLIDAY_SHIFT = "HOLIDAY_SHIFT";
     public static final String EVENT_ARRIVE = "ARRIVE";
     public static final String EVENT_COMPLETE = "COMPLETE";
     public static final String EVENT_CANCEL = "CANCEL";
